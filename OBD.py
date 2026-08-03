@@ -32,6 +32,7 @@ from serial.tools import list_ports
 
 HEX_RE = re.compile(r"^[0-9A-F]+$")
 NO_DATA_WORDS = ("NO DATA", "UNABLE TO CONNECT", "BUS INIT", "STOPPED", "ERROR")
+LOG_DIR = Path(__file__).resolve().parent / "logs"
 
 
 @dataclass(frozen=True)
@@ -670,9 +671,11 @@ class App:
         return [pid for pid in QUICK_PID_IDS if pid in self.supported]
 
     def choose_log(self) -> None:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
         filename = filedialog.asksaveasfilename(
             title="Choose CSV log",
             defaultextension=".csv",
+            initialdir=LOG_DIR,
             initialfile=f"obd_log_{datetime.now():%Y%m%d_%H%M%S}.csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
         )
@@ -696,7 +699,8 @@ class App:
             return
 
         if self.log_path is None:
-            self.log_path = Path.cwd() / f"obd_log_{datetime.now():%Y%m%d_%H%M%S}.csv"
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            self.log_path = LOG_DIR / f"obd_log_{datetime.now():%Y%m%d_%H%M%S}.csv"
 
         self.csv_handle = self.log_path.open("w", newline="", encoding="utf-8-sig")
         fields = ["timestamp"] + [PID_CATALOG[p].name for p in pids] + [

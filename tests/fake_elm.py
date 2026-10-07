@@ -27,6 +27,12 @@ def ford_can_responses() -> dict[str, list[str]]:
         "04": ["7E80144", "7E90144"],
         "010C": ["7E804410C1AF8"],
         "0105": ["7E8034105 5A".replace(" ", "")],
+        # Ford module scan (physical addressing, keyed by ATSH header)
+        "7E0:19028F": ["7E8075902FF01710009"],
+        "760:19028F": ["76810 0B 59 02 FF 40 40 12".replace(" ", ""), "7682109C1008728AAAA"],
+        "737:19028F": ["73F037F1911"],
+        "737:1800FF00": ["73F05580193 18E0".replace(" ", "")],
+        "760:14FFFFFF": ["7680154"],
     }
 
 
@@ -35,6 +41,7 @@ class FakeSerial:
         self.responses = responses if responses is not None else ford_can_responses()
         self.protocol = protocol
         self.headers = False
+        self.target = "7DF"
         self.out = b""
         self.is_open = True
         self.sent: list[str] = []
@@ -75,9 +82,15 @@ class FakeSerial:
         if command.startswith("ATH"):
             self.headers = command == "ATH1"
             return "OK"
+        if command.startswith("ATSH"):
+            self.target = command[4:]
+            return "OK"
         if command.startswith("AT"):
             return "OK"
-        lines = self.responses.get(command)
+        if self.target != "7DF":
+            lines = self.responses.get(f"{self.target}:{command}")
+        else:
+            lines = self.responses.get(command)
         if not lines:
             return "NO DATA"
         if self.headers:

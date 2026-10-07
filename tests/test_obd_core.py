@@ -53,6 +53,20 @@ class FordCanTest(unittest.TestCase):
         self.assertIn("READY      Catalyst", text)
 
 
+class FordModuleScanTest(unittest.TestCase):
+    def test_uds_and_kwp_modules(self):
+        import ford
+        elm = connected_elm()
+        dtcs, results = ford.scan_modules(elm)
+        found = {(d.code, d.module.split()[0], d.status) for d in dtcs}
+        self.assertEqual(found, {("P0171", "PCM", "Active, Stored"), ("C0040", "ABS", "Active, Stored"),
+                                 ("U0100", "ABS", "Stored"), ("B1318", "RCM", "Stored")})
+        responded = {r.short: r.protocol for r in results if r.responded}
+        self.assertEqual(responded, {"PCM": "UDS", "ABS": "UDS", "RCM": "KWP"})
+        self.assertEqual(elm.serial.sent[-1], "ATSH7DF")  # broadcast header restored
+        self.assertIn("ABS: cleared", ford.clear_module_dtcs(elm, results))
+
+
 class KLineTest(unittest.TestCase):
     def test_kline_dtcs_have_no_count_byte(self):
         responses = {"0100": ["7E806410098188013"], "03": ["7E8074301330000000000"]}

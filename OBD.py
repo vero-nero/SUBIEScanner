@@ -23,6 +23,8 @@ from tkinter import filedialog, messagebox, ttk
 
 from serial.tools import list_ports
 
+import ford
+
 from obd_core import (
     DTC, ELM327, PID_CATALOG, QUICK_PID_IDS, SUPPORT_PIDS, VEHICLE_PROFILES,
     clear_dtcs, decode_pid_value, derive_values, discover_supported_pids, ecu_name,
@@ -51,6 +53,7 @@ class App:
         self.vehicle: dict[str, str] = {}
         self.dtcs: list[DTC] = []
         self.dtc_sections: dict[str, str] = {}
+        self.module_results: list[ford.ModuleResult] = []
         self.log_path: Path | None = None
         self.csv_handle = None
         self.csv_writer = None
@@ -132,6 +135,9 @@ class App:
         ttk.Button(toolbar, text="Read codes", command=self.read_dtcs).pack(side="left", padx=3)
         ttk.Button(toolbar, text="Read freeze frame", command=self.read_freeze).pack(side="left", padx=3)
         ttk.Button(toolbar, text="Clear codes", command=self.clear_dtcs).pack(side="left", padx=3)
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
+        ttk.Button(toolbar, text="Ford module scan", command=self.scan_ford_modules).pack(side="left", padx=3)
+        ttk.Button(toolbar, text="Clear module codes", command=self.clear_ford_modules).pack(side="left", padx=3)
         ttk.Button(toolbar, text="Save report", command=self.save_report).pack(side="right", padx=3)
 
         panes = ttk.Panedwindow(tab, orient="vertical")
@@ -303,6 +309,33 @@ class App:
             self.queue.put(("dtcs", ([], f"CLEAR DTC RESPONSE\n\n{result}")))
 
         self.background(worker, "clear codes")
+
+    def scan_ford_modules(self) -> None:
+        def worker() -> None:
+            dtcs, results = ford.scan_modules(
+                self.elm, self.make or "Ford",
+                progress=lambda text: self.queue.put(("status", text)))
+            self.queue.put(("modules", (dtcs, results)))
+
+        self.background(worker, "module scan")
+
+    def clear_ford_modules(self) -> None:
+        if not self.module_results:
+            messagebox.showinfo("Scan first", "Run the Ford module scan first so the scanner knows which modules exist.")
+            return
+        if not messagebox.askyesno(
+            "Clear module codes",
+            "This clears the trouble codes in every module that answered the scan "
+            "(ABS, airbag, body, …).\n\nIgnition ON, engine OFF. Continue?",
+        ):
+            return
+        results = list(self.module_results)
+
+        def worker() -> None:
+            lines = ford.clear_module_dtcs(self.elm, results)
+            self.queue.put(("dtc_section", ("modules", "MODULE CLEAR RESPONSE\n\n" + "\n".join(lines))))
+
+        self.background(worker, "clear module codes")
 
     def save_report(self) -> None:
         if not self.dtcs and not self.dtc_sections:
@@ -497,6 +530,18 @@ class App:
                     self.set_text(self.diagnosis_text, str(payload))
                 elif kind == "dtcs":
                     self.show_dtcs(*payload)
+                elif kind == "modules":
+                    dtcs, results = payload
+                    self.module_results = results
+                    generic = [d for d in self.dtcs if not any(d.module.startswith(m.short + " ") for m in results)]
+                    sections = dict(self.dtc_sections)
+                    self.show_dtcs(generic + dtcs, sections.pop("codes", ""))
+                    for key, text in sections.items():
+                        if key != "modules":
+                            self.set_dtc_section(key, text)
+                    self.set_dtc_section("modules", ford.format_module_summary(results, dtcs))
+                elif kind == "status":
+                    self.status_var.set(str(payload))
                 elif kind == "dtc_section":
                     self.set_dtc_section(*payload)
                 elif kind == "console":

@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import queue
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -26,9 +27,9 @@ from serial.tools import list_ports
 import ford
 
 from obd_core import (
-    DTC, ELM327, PID_CATALOG, QUICK_PID_IDS, SUPPORT_PIDS, VEHICLE_PROFILES,
+    DTC, ELM327, PID_CATALOG, QUICK_PID_IDS, PIDReader, SUPPORT_PIDS, VEHICLE_PROFILES,
     clear_dtcs, decode_pid_value, derive_values, discover_supported_pids, ecu_name,
-    format_readiness, pid_data, read_freeze_frame, read_generic_dtcs,
+    format_readiness, read_freeze_frame, read_generic_dtcs,
     read_monitor_status, read_vehicle_info,
 )
 
@@ -430,22 +431,22 @@ class App:
         self.stop_event.clear()
         self.monitoring = True
         self.status_var.set(f"Logging {len(pids)} PIDs")
-        address = self.ecm_address
+        reader = PIDReader(self.elm, self.ecm_address)
 
         def worker() -> None:
             try:
                 while not self.stop_event.is_set():
+                    started = time.monotonic()
                     row: dict[str, object] = {"timestamp": datetime.now().isoformat(timespec="milliseconds")}
                     cycle_values: dict[int, tuple[str, float | None]] = {}
 
-                    for pid in pids:
-                        if self.stop_event.is_set():
-                            break
-                        data = pid_data(self.elm.request(f"01{pid:02X}", 3.0), 0x01, pid, address)
+                    for pid, data in reader.read(pids):
                         text, numeric = decode_pid_value(pid, data) if data is not None else ("No data", None)
                         cycle_values[pid] = (text, numeric)
                         row[PID_CATALOG[pid].name] = text
-                        self.queue.put(("live", (pid, text)))
+                        self.queue.put(("live", (pid, text, numeric)))
+                        if self.stop_event.is_set():
+                            break
                         if pause:
                             self.stop_event.wait(pause)
 
@@ -454,6 +455,10 @@ class App:
                     self.csv_writer.writerow(row)
                     self.csv_handle.flush()
                     self.queue.put(("diagnosis", derived["text"]))
+                    cycle = time.monotonic() - started
+                    mode = "multi-PID" if reader.batch else "single PID"
+                    self.queue.put(("status", f"Logging {len(pids)} PIDs · {cycle * 1000:.0f} ms/cycle "
+                                              f"({1 / max(cycle, 0.001):.1f} Hz, {mode})"))
 
             except Exception as exc:
                 self.queue.put(("error", f"Logging stopped:\n{exc}"))
@@ -521,7 +526,7 @@ class App:
                     self.summary_var.set(f"{len(supported)} module(s) answered ({modules}); "
                                          f"engine reports {len(self.supported)} PIDs, {known} decoded")
                 elif kind == "live":
-                    pid, value = payload
+                    pid, value, _numeric = payload
                     iid = f"{pid:02X}"
                     if self.live_tree.exists(iid):
                         old = self.live_tree.item(iid, "values")

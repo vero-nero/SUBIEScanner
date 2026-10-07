@@ -53,6 +53,25 @@ class FordCanTest(unittest.TestCase):
         self.assertIn("READY      Catalyst", text)
 
 
+class LiveDataTest(unittest.TestCase):
+    def test_multi_pid_batch(self):
+        elm = connected_elm()
+        reader = obd_core.PIDReader(elm, "7E8")
+        values = {pid: obd_core.decode_pid_value(pid, data)[0]
+                  for pid, data in reader.read([0x01, 0x04, 0x05, 0x0C, 0x0D, 0x11])}
+        self.assertEqual(values[0x0C], "1726")
+        self.assertEqual(values[0x05], "50")
+        self.assertEqual(values[0x0D], "50")
+        self.assertNotIn("010C", elm.serial.sent)  # answered by the single batched request
+
+    def test_falls_back_to_single_pid(self):
+        elm = connected_elm()
+        reader = obd_core.PIDReader(elm, "7E8")
+        values = dict(reader.read([0x05, 0x0C]))  # no multi-PID answer in the simulator
+        self.assertEqual(values[0x0C], [0x1A, 0xF8])
+        self.assertEqual(values[0x05], [0x5A])
+
+
 class FordModuleScanTest(unittest.TestCase):
     def test_uds_and_kwp_modules(self):
         import ford

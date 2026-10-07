@@ -315,6 +315,10 @@ PID_CATALOG: dict[int, PIDDef] = {p.pid: p for p in [
     _P(0x62, "Actual engine torque", "%", 3),
     _P(0x63, "Engine reference torque", "Nm", 3, 2),
     _P(0x64, "Engine percent torque data", "%", 3, 5),
+    _P(0x66, "MAF sensor A/B", "g/s", 3, 5),
+    _P(0x67, "Engine coolant temperature sensors A/B", "°C", 3, 3),
+    _P(0x8E, "Engine friction percent torque", "%", 3),
+    _P(0xA6, "Odometer", "km", 2, 4),
 ]}
 
 QUICK_PID_IDS = [pid for pid, definition in PID_CATALOG.items() if definition.priority == 1]
@@ -510,6 +514,18 @@ def decode_pid_value(pid: int, data: list[int]) -> tuple[str, float | None]:
     if pid in (0x61, 0x62):
         value = a - 125.0
         return f"{value:.0f}", value
+    if pid == 0x66 and len(data) >= 5:
+        values = [(data[i] * 256 + data[i + 1]) / 32.0 for i in (1, 3)]
+        present = [values[i] for i in range(2) if a & (1 << i)] or values[:1]
+        return " / ".join(f"{v:.2f}" for v in present), present[0]
+    if pid == 0x67 and len(data) >= 3:
+        present = [data[i + 1] - 40 for i in range(2) if a & (1 << i)] or [b - 40]
+        return " / ".join(f"{v:.0f}" for v in present), float(present[0])
+    if pid == 0x8E:
+        return f"{a - 125:.0f}", float(a - 125)
+    if pid == 0xA6 and len(data) >= 4:
+        value = int.from_bytes(bytes(data[:4]), "big") / 10.0
+        return f"{value:.1f}", value
     if pid == 0x64 and len(data) >= 5:
         values = [(x - 125) for x in data[:5]]
         return " / ".join(str(x) for x in values), None
@@ -644,6 +660,64 @@ def pid_data(messages: list[EcuMessage], mode: int, pid: int,
             if data[index] == expected and data[index + 1] == pid:
                 return data[index + skip:]
     return None
+
+
+MAX_PIDS_PER_REQUEST = 6  # ISO 15765-4 limit for one mode 01 request
+
+
+def split_multi_pid(data: list[int], requested: list[int]) -> dict[int, list[int]] | None:
+    """Split a 41 <pid> <data> <pid> <data> … answer. None if it cannot be parsed safely."""
+    if not data or data[0] != 0x41:
+        return None
+    result: dict[int, list[int]] = {}
+    index = 1
+    while index < len(data):
+        pid = data[index]
+        if pid not in requested or pid in result or pid not in PID_CATALOG:
+            return None
+        length = PID_CATALOG[pid].length
+        if index + 1 + length > len(data):
+            return None
+        result[pid] = data[index + 1:index + 1 + length]
+        index += 1 + length
+    return result
+
+
+class PIDReader:
+    """Reads mode 01 PIDs, several per request on CAN (much faster), one by one otherwise."""
+
+    def __init__(self, elm: ELM327, address: str | None) -> None:
+        self.elm = elm
+        self.address = address
+        self.batch = elm.is_can
+        self.failures = 0
+
+    def _single(self, pid: int) -> list[int] | None:
+        return pid_data(self.elm.request(f"01{pid:02X}", 3.0), 0x01, pid, self.address)
+
+    def read(self, pids: list[int]):
+        """Yield (pid, data or None) for the requested PIDs."""
+        size = MAX_PIDS_PER_REQUEST if self.batch else 1
+        for start in range(0, len(pids), size):
+            chunk = pids[start:start + size]
+            parsed = None
+            if self.batch and len(chunk) > 1:
+                command = "01" + "".join(f"{pid:02X}" for pid in chunk)
+                for message in self.elm.request(command, 3.0):
+                    if self.address is None or not message.address or message.address == self.address:
+                        parsed = split_multi_pid(message.data, chunk)
+                        if parsed is not None:
+                            break
+                if parsed is None:
+                    self.failures += 1
+                    if self.failures >= 3:  # this ECU does not like multi-PID requests
+                        self.batch = False
+            if parsed is None:
+                for pid in chunk:
+                    yield pid, self._single(pid)
+            else:
+                for pid in chunk:
+                    yield pid, parsed.get(pid)
 
 
 def discover_supported_pids(elm: ELM327) -> tuple[str, dict[str, set[int]]]:

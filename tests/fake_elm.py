@@ -27,6 +27,9 @@ def ford_can_responses() -> dict[str, list[str]]:
         "04": ["7E80144", "7E90144"],
         "010C": ["7E804410C1AF8"],
         "0105": ["7E8034105 5A".replace(" ", "")],
+        # Multi-PID request (quick profile), engine answers multi-frame, TCM answers too
+        "010104050C0D11": ["7E8101141018307 6500".replace(" ", ""), "7E82104800 55A0C1AF8".replace(" ", ""),
+                           "7E903410D32", "7E822 0D321140AAAAAA".replace(" ", "")],
         # Ford module scan (physical addressing, keyed by ATSH header)
         "7E0:19028F": ["7E8075902FF01710009"],
         "760:19028F": ["76810 0B 59 02 FF 40 40 12".replace(" ", ""), "7682109C1008728AAAA"],

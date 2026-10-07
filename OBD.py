@@ -35,6 +35,23 @@ from obd_core import (
 
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 
+COLORS = {"blue": "#315A7D", "amber": "#B27A2A", "red": "#A44949", "green": "#50745D",
+          "light": "#F3F5F7", "text": "#20262D", "muted": "#66717D"}
+
+# Dashboard tiles: (pid, title, unit, warn(value) -> True when out of the normal range)
+DASHBOARD = [
+    (0x0C, "Engine RPM", "rpm", lambda v: v > 6000),
+    (0x0D, "Speed", "km/h", lambda v: False),
+    (0x05, "Coolant", "°C", lambda v: v > 105),
+    (0x0F, "Intake air", "°C", lambda v: v > 55),
+    (0x04, "Engine load", "%", lambda v: False),
+    (0x11, "Throttle", "%", lambda v: False),
+    (0x06, "STFT B1", "%", lambda v: abs(v) > 15),
+    (0x07, "LTFT B1", "%", lambda v: abs(v) > 10),
+    (0x42, "Module voltage", "V", lambda v: v < 11.8 or v > 15.0),
+    (0x10, "MAF", "g/s", lambda v: False),
+]
+
 
 class App:
     def __init__(self, root: tk.Tk) -> None:
@@ -65,6 +82,7 @@ class App:
         self.profile_var = tk.StringVar(value="Quick diagnostic")
         self.interval_var = tk.StringVar(value="0.0")
         self.raw_var = tk.BooleanVar(value=False)
+        self.show_unsupported_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Disconnected")
         self.vehicle_info_var = tk.StringVar(value="No vehicle connected")
         self.summary_var = tk.StringVar(value="No ECU data")
@@ -76,7 +94,32 @@ class App:
 
     # ------------------------------------------------------------------ UI
 
+    def configure_style(self) -> None:
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        self.root.configure(bg=COLORS["light"])
+        style.configure("TFrame", background=COLORS["light"])
+        style.configure("TLabel", background=COLORS["light"], foreground=COLORS["text"], font=("Segoe UI", 10))
+        style.configure("TCheckbutton", background=COLORS["light"], font=("Segoe UI", 9))
+        style.configure("Info.TLabel", foreground=COLORS["blue"], font=("Segoe UI Semibold", 10))
+        style.configure("TButton", font=("Segoe UI", 9), padding=(9, 5))
+        style.configure("Accent.TButton", foreground="white", background=COLORS["blue"])
+        style.map("Accent.TButton", background=[("active", "#284A67")])
+        style.configure("TNotebook", background=COLORS["light"], borderwidth=0)
+        style.configure("TNotebook.Tab", font=("Segoe UI", 10), padding=(14, 7))
+        style.map("TNotebook.Tab", background=[("selected", "white")])
+        style.configure("Treeview", font=("Segoe UI", 9), rowheight=24, background="white", fieldbackground="white")
+        style.configure("Treeview.Heading", font=("Segoe UI Semibold", 9), background="#E9EDF1")
+        style.configure("Tile.TFrame", background="white")
+        style.configure("TileTitle.TLabel", background="white", foreground=COLORS["muted"], font=("Segoe UI", 9))
+        style.configure("TileValue.TLabel", background="white", foreground=COLORS["text"], font=("Segoe UI Semibold", 18))
+        style.configure("TileWarn.TLabel", background="white", foreground=COLORS["red"], font=("Segoe UI Semibold", 18))
+
     def build_ui(self) -> None:
+        self.configure_style()
         connection = ttk.Frame(self.root, padding=(10, 10, 10, 4))
         connection.pack(fill="x")
 
@@ -94,14 +137,12 @@ class App:
                      state="readonly", width=16).grid(row=0, column=5, padx=(0, 8))
 
         ttk.Button(connection, text="Refresh", command=self.refresh_ports).grid(row=0, column=6, padx=3)
-        ttk.Button(connection, text="Connect", command=self.connect).grid(row=0, column=7, padx=3)
+        ttk.Button(connection, text="Connect", style="Accent.TButton", command=self.connect).grid(row=0, column=7, padx=3)
         ttk.Button(connection, text="Disconnect", command=self.disconnect).grid(row=0, column=8, padx=3)
-        ttk.Label(connection, textvariable=self.status_var).grid(row=0, column=9, padx=(15, 0), sticky="w")
-        connection.columnconfigure(9, weight=1)
 
         info = ttk.Frame(self.root, padding=(10, 0, 10, 6))
         info.pack(fill="x")
-        ttk.Label(info, textvariable=self.vehicle_info_var, foreground="#315A7D").pack(side="left")
+        ttk.Label(info, textvariable=self.vehicle_info_var, style="Info.TLabel").pack(side="left")
         ttk.Checkbutton(info, text="Show raw responses in console", variable=self.raw_var).pack(side="right")
 
         notebook = ttk.Notebook(self.root)
@@ -129,11 +170,12 @@ class App:
         bottom = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         bottom.pack(fill="x")
         ttk.Label(bottom, textvariable=self.summary_var).pack(side="left")
+        ttk.Label(bottom, textvariable=self.status_var, style="Info.TLabel").pack(side="right")
 
     def build_dtc_tab(self, tab: ttk.Frame) -> None:
         toolbar = ttk.Frame(tab)
         toolbar.pack(fill="x", pady=(0, 6))
-        ttk.Button(toolbar, text="Read codes", command=self.read_dtcs).pack(side="left", padx=3)
+        ttk.Button(toolbar, text="Read codes", style="Accent.TButton", command=self.read_dtcs).pack(side="left", padx=3)
         ttk.Button(toolbar, text="Read freeze frame", command=self.read_freeze).pack(side="left", padx=3)
         ttk.Button(toolbar, text="Clear codes", command=self.clear_dtcs).pack(side="left", padx=3)
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
@@ -148,7 +190,7 @@ class App:
         self.dtc_tree = ttk.Treeview(table, columns=("code", "status", "module", "description"), show="headings", height=8)
         for key, title, width, stretch in (
             ("code", "Code", 90, False), ("status", "Status", 120, False),
-            ("module", "Module", 190, False), ("description", "Description", 600, True),
+            ("module", "Module", 270, False), ("description", "Description", 560, True),
         ):
             self.dtc_tree.heading(key, text=title)
             self.dtc_tree.column(key, width=width, stretch=stretch)
@@ -176,16 +218,34 @@ class App:
         ttk.Label(toolbar, text="Pause between requests").pack(side="left", padx=(8, 0))
         ttk.Entry(toolbar, textvariable=self.interval_var, width=6).pack(side="left", padx=4)
         ttk.Label(toolbar, text="s").pack(side="left")
-        ttk.Button(toolbar, text="Start logging", command=self.start_monitoring).pack(side="left", padx=(12, 4))
+        ttk.Button(toolbar, text="Start logging", style="Accent.TButton", command=self.start_monitoring).pack(side="left", padx=(12, 4))
         ttk.Button(toolbar, text="Stop", command=self.stop_monitoring).pack(side="left", padx=4)
+        ttk.Checkbutton(toolbar, text="Show unsupported", variable=self.show_unsupported_var,
+                        command=self.populate_tree).pack(side="left", padx=8)
 
         self.log_label = ttk.Label(toolbar, text="Log: automatic")
         ttk.Button(toolbar, text="Choose CSV", command=self.choose_log).pack(side="right")
         self.log_label.pack(side="right", padx=6)
 
+        tiles = ttk.Frame(tab)
+        tiles.pack(fill="x", pady=(0, 6))
+        self.tiles: dict[int, ttk.Label] = {}
+        columns = len(DASHBOARD) // 2
+        for index, (pid, title, unit, _warn) in enumerate(DASHBOARD):
+            tile = ttk.Frame(tiles, style="Tile.TFrame", padding=(12, 8))
+            tile.grid(row=index // columns, column=index % columns, sticky="nsew", padx=3, pady=3)
+            ttk.Label(tile, text=f"{title} ({unit})", style="TileTitle.TLabel").pack(anchor="w")
+            value = ttk.Label(tile, text="—", style="TileValue.TLabel")
+            value.pack(anchor="w")
+            self.tiles[pid] = value
+        for column in range(columns):
+            tiles.columnconfigure(column, weight=1)
+
         frame = ttk.Frame(tab)
         frame.pack(fill="both", expand=True)
         self.live_tree = ttk.Treeview(frame, columns=("pid", "name", "value", "unit", "support"), show="headings")
+        self.live_tree.tag_configure("unsupported", foreground="#9AA3AD")
+        self.live_tree.tag_configure("nodata", foreground=COLORS["amber"])
         for key, title, width in (
             ("pid", "PID", 70), ("name", "Parameter", 430),
             ("value", "Value", 280), ("unit", "Unit", 90), ("support", "Supported", 90),
@@ -366,11 +426,16 @@ class App:
         self.live_tree.delete(*self.live_tree.get_children())
         for pid in sorted(PID_CATALOG):
             definition = PID_CATALOG[pid]
-            supported = "Yes" if pid in self.supported else "No"
+            supported = pid in self.supported
+            if not supported and not self.show_unsupported_var.get():
+                continue
             self.live_tree.insert(
                 "", "end", iid=f"{pid:02X}",
-                values=(f"01 {pid:02X}", definition.name, "—", definition.unit, supported),
+                values=(f"01 {pid:02X}", definition.name, "—", definition.unit, "Yes" if supported else "No"),
+                tags=() if supported else ("unsupported",),
             )
+        for pid, label in self.tiles.items():
+            label.configure(text="—" if pid in self.supported else "n/a", style="TileValue.TLabel")
 
     def selected_pids(self) -> list[int]:
         usable = [pid for pid in sorted(self.supported) if pid in PID_CATALOG and pid not in SUPPORT_PIDS]
@@ -493,10 +558,19 @@ class App:
         for dtc in dtcs:
             description = dtc.description + (f"  [{dtc.detail}]" if dtc.detail else "")
             self.dtc_tree.insert("", "end", values=(dtc.code, dtc.status, dtc.module, description),
-                                 tags=(dtc.status,))
+                                 tags=(dtc.status.split(",")[0],))
         if not dtcs:
             self.dtc_tree.insert("", "end", values=("—", "", "", "No trouble codes reported."))
         self.set_dtc_section("codes", details)
+
+    def update_tile(self, pid: int, text: str, numeric: float | None) -> None:
+        warn = next(rule for tile_pid, _t, _u, rule in DASHBOARD if tile_pid == pid)
+        if numeric is None:
+            self.tiles[pid].configure(text=text if text == "No data" else "—", style="TileValue.TLabel")
+            return
+        digits = 2 if pid == 0x42 else 1 if pid in (0x06, 0x07, 0x10) else 0
+        style = "TileWarn.TLabel" if warn(numeric) else "TileValue.TLabel"
+        self.tiles[pid].configure(text=f"{numeric:.{digits}f}", style=style)
 
     @staticmethod
     def set_text(widget: tk.Text, text: str) -> None:
@@ -526,11 +600,14 @@ class App:
                     self.summary_var.set(f"{len(supported)} module(s) answered ({modules}); "
                                          f"engine reports {len(self.supported)} PIDs, {known} decoded")
                 elif kind == "live":
-                    pid, value, _numeric = payload
+                    pid, value, numeric = payload
                     iid = f"{pid:02X}"
                     if self.live_tree.exists(iid):
                         old = self.live_tree.item(iid, "values")
-                        self.live_tree.item(iid, values=(old[0], old[1], value, old[3], old[4]))
+                        self.live_tree.item(iid, values=(old[0], old[1], value, old[3], old[4]),
+                                            tags=("nodata",) if value == "No data" else ())
+                    if pid in self.tiles:
+                        self.update_tile(pid, value, numeric)
                 elif kind == "diagnosis":
                     self.set_text(self.diagnosis_text, str(payload))
                 elif kind == "dtcs":
